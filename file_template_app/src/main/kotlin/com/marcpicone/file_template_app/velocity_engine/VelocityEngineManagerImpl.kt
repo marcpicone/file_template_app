@@ -76,7 +76,7 @@ class VelocityEngineManagerImpl(
             // @formatter:off
             "FEATURE_NAME" to currentFeatureName,
             "FEATURE_PATH" to featureName,
-            "RES_PATH" to if (pathManager.getAndroidRelativeResPath().isNullOrEmpty()) "" else "${pathManager.getAndroidRelativeResPath()}/",
+            "ANDROID_RES_PATH" to if (pathManager.getAndroidRelativeResPath().isNullOrEmpty()) "" else "${pathManager.getAndroidRelativeResPath()}",
             "ANDROID_PACKAGE" to if (featureName.isNullOrEmpty()) "package ${pathManager.getAndroidPackageName()}" else "package ${pathManager.getAndroidPackageName()}.$featureName",
             "ANDROID_PACKAGE_NAME" to pathManager.getAndroidPackageName(),
             "FEATURE_NAME_TO_UPPER_CAMEL_CASE" to currentFeatureName.snakeCaseToCamelCaseWithFirstCharUpperCase(),

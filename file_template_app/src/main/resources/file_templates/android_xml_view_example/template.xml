@@ -1,0 +1,22 @@
+<templates>
+    <template
+        parent-folder-name="android_xml_view_example"
+        file-extension="kt"
+        file-name="View.kt"
+        groups="android, example"
+        id="android_custom_view"
+        velocity-file-path="${FEATURE_PATH}/${FEATURE_NAME_TO_UPPER_CAMEL_CASE}">
+        <child
+            file-extension="kt"
+            file-name="ViewContract.kt"
+            velocity-file-path="${FEATURE_PATH}/${FEATURE_NAME_TO_UPPER_CAMEL_CASE}Contract"/>
+        <child
+            file-extension="kt"
+            file-name="ViewPresenter.kt"
+            velocity-file-path="${FEATURE_PATH}/${FEATURE_NAME_TO_UPPER_CAMEL_CASE}Presenter"/>
+        <child
+            file-extension="xml"
+            file-name="ViewLayout.xml"
+            velocity-file-path="${ANDROID_RES_PATH}/${FEATURE_NAME_TO_LOWER_SNAKE_CASE}/layout/${FEATURE_NAME_TO_LOWER_SNAKE_CASE}"/>
+    </template>
+</templates>
