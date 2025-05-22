@@ -25,6 +25,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.marcpicone.file_template_app.file_template_structure_preview_view.FileTemplateStructurePreviewViewContract.Companion.FILE_ICON_PATH
 import com.marcpicone.file_template_app.file_template_structure_preview_view.FileTemplateStructurePreviewViewContract.Companion.FOLDER_ICON_PATH
@@ -56,8 +57,18 @@ private fun Content(
     val structure = uiState.structure.collectAsState()
     val rootFolder = structure.value as? FileTemplateStructure.FileTemplateStructureFolder
 
-    val items = remember(rootFolder) { createFlattenStructureWithDescendants(rootFolder) }
+    FileTreeView(
+        rootFolder = rootFolder,
+        modifier = modifier
+    )
+}
 
+@Composable
+private fun FileTreeView(
+    rootFolder: FileTemplateStructure.FileTemplateStructureFolder?,
+    modifier: Modifier = Modifier
+) {
+    val flatList = remember(rootFolder) { flattenStructure(rootFolder) }
     LazyColumn(
         modifier = modifier
             .fillMaxHeight()
@@ -68,82 +79,24 @@ private fun Content(
             ),
         contentPadding = PaddingValues(8.dp)
     ) {
-        items(items) { info ->
-            StructureRow(info)
+        items(flatList) { nodeInfo ->
+            FileNodeRow(nodeInfo)
         }
     }
 }
 
 @Composable
-private fun StructureRow(info: NodeInfo) {
-    val indent = 16.dp
-    val color = info.depth.depthToColor()
-
+private fun FileNodeRow(info: NodeInfo) {
+    val indentStep: Dp = 16.dp
+    val lineColor = info.depth.lineColor()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .drawBehind {
-                val px = indent.toPx()
-                val yTop = 0f
-                val yBottom = size.height
-                val yMid = size.height / 2
-                val strokeWidth = 1.dp.toPx()
-
-                info.ancestorHasChild.forEachIndexed { level, hasChild ->
-                    val isFile = info.node is FileTemplateStructure.FileTemplateStructureFile
-                    val x = if (isFile) {
-                        level * px
-                    } else {
-                        level * px + px
-                    }
-
-                    if (hasChild && level == info.ancestorHasChild.size - 1) {
-                        val xStart = level * px
-                        val xEnd = level * px + px
-                        // horizontal
-                        drawLine(
-                            color = color,
-                            strokeWidth = strokeWidth,
-                            start = Offset(xStart, yMid),
-                            end = Offset(xEnd, yMid)
-                        )
-                        // vertical to link to parent folder
-                        drawLine(
-                            color = color,
-                            strokeWidth = strokeWidth,
-                            start = Offset(x, yMid),
-                            end = Offset(x, yBottom)
-                        )
-                    } else if (hasChild && level == info.ancestorHasChild.size - 2) {
-                        val childX = level * px + px
-                        // vertical to link to parent folder
-                        drawLine(
-                            color = color,
-                            strokeWidth = strokeWidth,
-                            start = Offset(childX, yTop),
-                            end = Offset(childX, yMid)
-                        )
-                    }
-                }
-
-                val xStart = info.depth * px
-                val xEnd = info.depth * px + px
-                // horizontal
-                drawLine(
-                    color = color,
-                    strokeWidth = strokeWidth,
-                    start = Offset(xStart, yMid),
-                    end = Offset(xEnd, yMid)
-                )
-            }
+            .drawHierarchyLines(info = info, indent = indentStep, color = lineColor)
     ) {
-        Spacer(Modifier.width(indent * (info.depth + 1)))
-        if (info.node is FileTemplateStructure.FileTemplateStructureFolder) {
-            FolderIconView(tint = color)
-        } else {
-            FileIconView(tint = info.color)
-        }
+        Spacer(Modifier.width(indentStep * (info.depth + 1)))
+        FileOrFolderIcon(isFolder = info.isFolder, tint = info.color)
         Text(
             text = info.node.name,
             color = info.color,
@@ -152,96 +105,90 @@ private fun StructureRow(info: NodeInfo) {
     }
 }
 
-@Composable
-private fun FolderIconView(
-    tint: Color
-) {
-    Icon(
-        painter = painterResource(FOLDER_ICON_PATH),
-        contentDescription = null,
-        tint = tint,
-        modifier = Modifier.padding(end = 8.dp)
-    )
-}
+private fun Modifier.drawHierarchyLines(
+    info: NodeInfo,
+    indent: Dp,
+    color: Color
+): Modifier = this.drawBehind {
+    val px = indent.toPx()
+    val midY = size.height / 2
+    val bottomY = size.height
+    val stroke = 1.dp.toPx()
 
-@Composable
-private fun FileIconView(
-    tint: Color
-) {
-    Icon(
-        painter = painterResource(FILE_ICON_PATH),
-        contentDescription = null,
-        tint = tint,
-        modifier = Modifier.padding(end = 8.dp)
-    )
-}
-
-private fun createFlattenStructureWithDescendants(
-    root: FileTemplateStructure.FileTemplateStructureFolder?
-): List<NodeInfo> {
-    if (root == null) {
-        return emptyList()
+    info.ancestorHasChild.forEachIndexed { level, hasChild ->
+        if (!hasChild) return@forEachIndexed
+        val x = level * px + if (info.isFolder) px else 0f
+        if (level == info.ancestorHasChild.lastIndex) {
+            // horizontal
+            drawLine(color, strokeWidth = stroke, start = Offset(level * px, midY), end = Offset(level * px + px, midY))
+            // vertical down
+            drawLine(color, strokeWidth = stroke, start = Offset(x, midY), end = Offset(x, bottomY))
+        } else if (level == info.ancestorHasChild.lastIndex - 1) {
+            // vertical up
+            drawLine(
+                color,
+                strokeWidth = stroke,
+                start = Offset(level * px + px, 0f),
+                end = Offset(level * px + px, midY)
+            )
+        }
     }
-    val nodeInfos = createNodeRecursively(listOf(root), 0, emptyList())
-    return nodeInfos
-        .toMutableList()
-        .apply {
-            for (i in nodeInfos.indices) {
-                val similarNodes = nodeInfos.filter { it.node == nodeInfos[i].node }
-                if (similarNodes.size > 1) {
-                    val lightGrayNode = similarNodes.find { it.color == Color.LightGray }
-                    remove(lightGrayNode)
-                }
-            }
-        }.distinct()
+
+    val startX = info.depth * px
+    drawLine(color, strokeWidth = stroke, start = Offset(startX, midY), end = Offset(startX + px, midY))
 }
 
-private fun createNodeRecursively(
-    nodes: List<FileTemplateStructure>,
+@Composable
+private fun FileOrFolderIcon(isFolder: Boolean, tint: Color) {
+    val iconPath = if (isFolder) FOLDER_ICON_PATH else FILE_ICON_PATH
+    Icon(
+        painter = painterResource(iconPath),
+        contentDescription = null,
+        tint = tint,
+        modifier = Modifier.padding(end = 8.dp)
+    )
+}
+
+private fun flattenStructure(root: FileTemplateStructure?): List<NodeInfo> {
+    if (root == null) return emptyList()
+    val collected = mutableListOf<NodeInfo>()
+    collectNodes(node = root, depth = 0, ancestors = emptyList(), collected = collected)
+    // remove duplicate light-gray entries if same node appears multiple times
+    return collected.distinctBy { it.node.path to it.color }
+}
+
+private fun collectNodes(
+    node: FileTemplateStructure,
     depth: Int,
-    ancestorFlags: List<Boolean>
-): List<NodeInfo> {
-    val nodeSet = mutableSetOf<FileTemplateStructure>()
-    return nodes.flatMap { node ->
-        val color = if (File(node.path).exists()) {
-            val color = if (nodeSet.contains(node)) {
-                Color.Red
-            } else {
-                Color.LightGray
-            }
-            nodeSet.add(node)
-            color
-        } else {
-            Color.Green
-        }
-        val currentNodeInfo = NodeInfo(
-            node = node,
-            depth = depth,
-            ancestorHasChild = ancestorFlags,
-            color = color
-        )
-        val children = (node as? FileTemplateStructure.FileTemplateStructureFolder)?.details.orEmpty()
-        if (children.isEmpty()) {
-            listOf(currentNodeInfo)
-        } else {
-            listOf(currentNodeInfo) + createNodeRecursively(children, depth + 1, ancestorFlags + true)
+    ancestors: List<Boolean>,
+    collected: MutableList<NodeInfo>
+) {
+    val exists = File(node.path).exists()
+    val color = when {
+        !exists -> Color.Green
+        collected.map { it.node }.contains(node) -> Color.Red
+        else -> Color.LightGray
+    }
+    collected += NodeInfo(node = node, depth = depth, ancestorHasChild = ancestors, color = color)
+    val children = (node as? FileTemplateStructure.FileTemplateStructureFolder)?.details.orEmpty()
+    if (children.isNotEmpty()) {
+        children.forEach { child ->
+            collectNodes(child, depth + 1, ancestors + true, collected)
         }
     }
 }
 
-private fun Int.depthToColor(): Color {
-    return when (this) {
-        0 -> Color.DarkGray
-        1 -> Color.Gray
-        2 -> Color.LightGray
-        3 -> Color.Cyan
-        4 -> Color.Blue
-        5 -> Color.Magenta
-        6 -> Color.Red
-        7 -> Color.Yellow
-        8 -> Color.Green
-        else -> Color.White
-    }
+private fun Int.lineColor(): Color = when (this) {
+    0 -> Color.DarkGray
+    1 -> Color.Gray
+    2 -> Color.LightGray
+    3 -> Color.Cyan
+    4 -> Color.Blue
+    5 -> Color.Magenta
+    6 -> Color.Red
+    7 -> Color.Yellow
+    8 -> Color.Green
+    else -> Color.White
 }
 
 private data class NodeInfo(
@@ -249,7 +196,10 @@ private data class NodeInfo(
     val depth: Int,
     val ancestorHasChild: List<Boolean>,
     val color: Color
-)
+) {
+    val isFolder: Boolean
+        get() = node is FileTemplateStructure.FileTemplateStructureFolder
+}
 
 @Composable
 private fun createPresenter(): FileTemplateStructurePreviewViewContract {

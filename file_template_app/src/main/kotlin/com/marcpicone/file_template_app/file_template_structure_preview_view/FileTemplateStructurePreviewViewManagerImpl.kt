@@ -1,15 +1,17 @@
 package com.marcpicone.file_template_app.file_template_structure_preview_view
 
 import com.marcpicone.file_template_app.feature.FeatureManager
+import com.marcpicone.file_template_app.file_template.FileTemplate
 import com.marcpicone.file_template_app.file_template.FileTemplateManager
 import com.marcpicone.file_template_app.file_template_feature_view.FileTemplateFeatureViewManager
 import com.marcpicone.file_template_app.path.PathManager
 import com.marcpicone.file_template_app.velocity_engine.VelocityEngineManager
-import java.io.File
 import java.io.StringWriter
 import java.nio.file.Path
 import java.nio.file.Paths
 import kotlin.math.min
+import org.apache.velocity.VelocityContext
+import org.apache.velocity.app.VelocityEngine
 
 class FileTemplateStructurePreviewViewManagerImpl(
     private val featureManager: FeatureManager,
@@ -27,68 +29,7 @@ class FileTemplateStructurePreviewViewManagerImpl(
     }
 
     override fun getStructure(): FileTemplateStructure? {
-        val outputPaths = ArrayList<String>()
-        val featureIds = featureManager.getFeatureIds()
-        val velocityEngine = velocityEngineManager.getEngine()
-        featureIds.forEach { featureId ->
-            val currentFeature = featureManager.getFeature(featureId)
-                ?: throw IllegalStateException("No current feature for featureId $featureId")
-            val fileTemplates = currentFeature.attachedTemplateIds.map { fileTemplateManager.getFileTemplate(it) }
-            fileTemplates.forEach { fileTemplate ->
-                val fileExtension = fileTemplate.fileExtension
-                val velocityContext = velocityEngineManager.getEngineContext(
-                    fileTemplate = fileTemplate,
-                    featureName = currentFeature.name.takeIf { it.trim().isNotEmpty() }
-                )
-
-                val fileNameWriter = StringWriter()
-                val child = fileTemplate.child
-                val filePath = fileTemplate.filePath
-                val pathToCurrentFolder = pathManager.getPathToCurrentFolder()
-
-                velocityEngine.evaluate(
-                    /* context = */ velocityContext,
-                    /* out = */ fileNameWriter,
-                    /* logTag = */ "filePath",
-                    /* instring = */ filePath
-                )
-
-                val parentFolderName = fileNameWriter.toString().trim()
-                val parentOutputPath = Paths.get("$pathToCurrentFolder/$parentFolderName.$fileExtension")
-                val parentPathname = parentOutputPath.toString()
-                outputPaths.add(parentPathname)
-
-                for (i in child.indices) {
-                    val childTemplate = child[i]
-                    val childFileNameWriter = StringWriter()
-                    val childFileExtension = childTemplate.fileExtension
-
-                    velocityEngine.evaluate(
-                        velocityContext,
-                        childFileNameWriter,
-                        "filePath",
-                        childTemplate.filePath
-                    )
-
-                    val childFileName = childFileNameWriter.toString().trim()
-                    val childOutputPath = Paths.get("$pathToCurrentFolder/$childFileName.$childFileExtension")
-                    outputPaths.add(childOutputPath.toString())
-                }
-                // Add other files in parent folder
-                val removeLast = parentPathname.substringBeforeLast("/")
-                val parentFile = File(removeLast)
-                val otherFilePaths = if (parentFile.exists()) {
-                    parentFile.listFiles().map { it.path }
-                } else {
-                    emptyList()
-                }
-                outputPaths.addAll(otherFilePaths)
-            }
-        }
-        if (outputPaths.isEmpty()) {
-            return null
-        }
-        return outputPaths.toFileTemplateStructure()
+        return collectAllOutputPaths().takeIf { it.isNotEmpty() }?.toFileTemplateStructure()
     }
 
     override fun addListener(listener: FileTemplateStructurePreviewViewManager.Listener) {
@@ -102,81 +43,115 @@ class FileTemplateStructurePreviewViewManagerImpl(
         listeners.remove(listener)
     }
 
-    private fun ArrayList<String>.toFileTemplateStructure(): FileTemplateStructure {
-        val absolutePaths: List<Path> = this.map {
-            Paths.get(it)
-                .toAbsolutePath()
-                .normalize()
+    private fun collectAllOutputPaths(): List<String> =
+        featureManager.getFeatureIds().flatMap { featureId ->
+            val feature = featureManager.getFeature(featureId)
+                ?: throw IllegalArgumentException("Could not find feature for featureId : $featureId")
+            feature.attachedTemplateIds.map { templateId ->
+                fileTemplateManager.getFileTemplate(fileTemplateId = templateId)
+            }.flatMap { fileTemplate ->
+                processFileTemplate(fileTemplate = fileTemplate, featureName = feature.name)
+            }
         }
-        val first = absolutePaths.firstOrNull()
-            ?: error("No absolute path found")
 
-        val srcIndex = (0 until first.nameCount)
-            .firstOrNull { first.getName(it).toString() == "src" }
+    private fun processFileTemplate(
+        fileTemplate: FileTemplate.ParentFileTemplate,
+        featureName: String
+    ): List<String> {
+        val engine = velocityEngineManager.getEngine()
+        val context = velocityEngineManager.getEngineContext(
+            fileTemplate = fileTemplate,
+            featureName = featureName.takeIf { it.isNotBlank() }
+        )
+        val basePath = pathManager.getPathToCurrentFolder()
 
-        val rootPath: Path = if (srcIndex != null && srcIndex > 0) {
+        val parentName = evaluate(engine = engine, context = context, template = fileTemplate.filePath)
+        val parentPath = Paths.get("$basePath/$parentName.${fileTemplate.fileExtension}")
+        val results = mutableListOf(parentPath.toString())
+
+        fileTemplate.child.forEach { childTemplate ->
+            val childName = evaluate(engine = engine, context = context, template = childTemplate.filePath)
+            results += "$basePath/$childName.${childTemplate.fileExtension}"
+        }
+
+        parentPath.parent
+            ?.toFile()
+            ?.takeIf { it.exists() }
+            ?.listFiles()
+            ?.mapTo(results) { it.path }
+
+        return results
+    }
+
+    private fun evaluate(engine: VelocityEngine, context: VelocityContext, template: String): String {
+        return StringWriter()
+            .also { writer ->
+                engine.evaluate(context, writer, "FilePath", template)
+            }.toString().trim()
+    }
+
+    private fun List<String>.toFileTemplateStructure(): FileTemplateStructure {
+        val absolutePaths = map { Paths.get(it).toAbsolutePath().normalize() }
+        val root = deriveCommonRoot(absolutePaths)
+        return buildStructureTree(root, absolutePaths)
+    }
+
+    private fun deriveCommonRoot(paths: List<Path>): Path {
+        val first = paths.first()
+        val srcIndex = (0 until first.nameCount).firstOrNull { first.getName(it).toString() == "src" }
+        return if (srcIndex != null && srcIndex > 0) {
             first.root.resolve(first.subpath(0, srcIndex))
         } else {
-            absolutePaths.reduce { actualPath, nextPath ->
-                createCommonRoot(
-                    absolutePathA = actualPath,
-                    absolutePathB = nextPath
-                )
-            }
+            paths.reduce { a, b -> createCommonRoot(a, b) }
         }
+    }
 
-        val rootNode = DirNode(name = rootPath.fileName?.toString() ?: rootPath.toString(), path = rootPath)
+    private fun createCommonRoot(a: Path, b: Path): Path {
+        val max = min(a.nameCount, b.nameCount)
+        var i = 0
+        while (i < max && a.getName(i) == b.getName(i)) i++
+        return a.root.resolve(a.subpath(0, i))
+    }
 
-        for (path in absolutePaths) {
+    private fun buildStructureTree(
+        root: Path,
+        paths: List<Path>
+    ): FileTemplateStructure {
+        val rootNode = DirNode(name = root.fileName?.toString() ?: root.toString(), path = root)
+
+        paths.forEach { path ->
             val relativePath = try {
-                rootPath.relativize(path)
+                root.relativize(path)
             } catch (_: IllegalArgumentException) {
-                // Out of root -> skip
-                continue
+                return@forEach
             }
-            var currentRootNode = rootNode
-            for (i in 0 until relativePath.nameCount) {
-                val part = relativePath.getName(i).toString()
-                if (i == relativePath.nameCount - 1) {
-                    // Last part always a file in FileTemplateStructure
-                    currentRootNode.files += FileTemplateStructure.FileTemplateStructureFile(
+            var cursor = rootNode
+            for (index in 0 until relativePath.nameCount) {
+                val fileName = relativePath.getName(index).toString()
+                if (index == relativePath.nameCount - 1) {
+                    cursor.files += FileTemplateStructure.FileTemplateStructureFile(
                         path = path.toString(),
-                        name = part
+                        name = fileName
                     )
                 } else {
-                    currentRootNode = currentRootNode
-                        .subDirs
-                        .getOrPut(part) {
-                            DirNode(name = part, path = currentRootNode.path.resolve(part))
-                        }
+                    cursor = cursor.subDirs.getOrPut(fileName) {
+                        DirNode(name = fileName, path = cursor.path.resolve(fileName))
+                    }
                 }
             }
         }
+
         return rootNode.toStructure()
     }
 
-    private fun createCommonRoot(absolutePathA: Path, absolutePathB: Path): Path {
-        val maxSegments = min(absolutePathA.nameCount, absolutePathB.nameCount)
-        var i = 0
-        while (i < maxSegments && absolutePathA.getName(i) == absolutePathB.getName(i)) {
-            i++
-        }
-        return absolutePathA.root.resolve(absolutePathA.subpath(0, i))
-    }
-
-    private fun DirNode.toStructure(): FileTemplateStructure =
-        FileTemplateStructure.FileTemplateStructureFolder(
+    private fun DirNode.toStructure(): FileTemplateStructure.FileTemplateStructureFolder {
+        return FileTemplateStructure.FileTemplateStructureFolder(
             path = path.toString(),
             name = name,
             details = subDirs.values
                 .sortedBy { it.name }
-                .map { it.toStructure() } +
-                files.sortedBy { it.name }
+                .map { it.toStructure() } + files.sortedBy { it.name }
         )
-
-    private data class DirNode(val name: String, val path: Path) {
-        val subDirs = mutableMapOf<String, DirNode>()
-        val files = mutableListOf<FileTemplateStructure.FileTemplateStructureFile>()
     }
 
     private fun createFeatureListener() = object : FeatureManager.Listener {
@@ -190,4 +165,11 @@ class FileTemplateStructurePreviewViewManagerImpl(
             listeners.forEach { it.onChanged() }
         }
     }
+
+    private data class DirNode(
+        val name: String,
+        val path: Path,
+        val subDirs: MutableMap<String, DirNode> = mutableMapOf(),
+        val files: MutableList<FileTemplateStructure.FileTemplateStructureFile> = mutableListOf()
+    )
 }
